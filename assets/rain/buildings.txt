@@ -1,0 +1,11 @@
+# UTF-8 / 건물 이름|설명|입력 허용 별칭(; 구분, 없으면 빈칸)|정보 출처
+중앙도서관|1층에 경기인의 서재, 창의토론실, 창의팩토리가 있는 학습 공간입니다.||https://www.kyonggi.ac.kr/www/contents.do?key=7816
+성신관|2강의동으로, 1층에 자유롭게 이용할 수 있는 K-마루가 있습니다.|2강의동;제2강의동|https://www.kyonggi.ac.kr/www/contents.do?key=7816
+학생회관|1층에 자율공간과 회의실을 갖춘 K-AGORA가 있습니다.||https://www.kyonggi.ac.kr/www/contents.do?key=7816
+제1복지관|지하 1층에 경슐랭 식당과 Cafe ING가 있는 복지시설입니다.||https://www.kyonggi.ac.kr/www/contents.do?key=5754
+제2복지관|E-스퀘어로, 1층에 스퀘어 식당과 2층에 서점이 있습니다.|E-스퀘어;E-Square|https://www.kyonggi.ac.kr/www/contents.do?key=5754
+제3복지관|감성코어로, 1층에서 한식·돈까스·라면을 판매하는 식당을 이용할 수 있습니다.|감성코어|https://www.kyonggi.ac.kr/www/contents.do?key=5754
+종합강의동|1층에 복사·출력·제본 등을 제공하는 경기카피랜드 복사실이 있습니다.||https://www.kyonggi.ac.kr/www/contents.do?key=5754
+교수연구동|5층에 샌드위치·파스타·커피 등을 판매하는 샐리박스가 있습니다.||https://www.kyonggi.ac.kr/www/contents.do?key=5754
+홍보관|식사와 카페 메뉴를 제공하는 오아시스가 있는 건물입니다.||https://www.kyonggi.ac.kr/www/contents.do?key=5754
+7강의동|1층에 커피·음료와 와플 등을 판매하는 CAFE BLUEPOT이 있습니다.|제7강의동|https://www.kyonggi.ac.kr/www/contents.do?key=5754

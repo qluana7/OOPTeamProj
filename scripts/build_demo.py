@@ -17,7 +17,8 @@ if not compiler:
     raise SystemExit('JDK 17 이상을 설치하고 JAVA_HOME을 설정해 주세요.')
 with tempfile.TemporaryDirectory(prefix='campus-quiz-build-') as build:
     subprocess.run([compiler, '--release', '17', '-encoding', 'UTF-8', '-d', build,
-                    str(project / 'src' / 'CampusQuiz.java')], check=True)
+                    str(project / 'src' / 'CampusQuiz.java'),
+                    str(project / 'src' / 'CampusRain.java')], check=True)
     with ZipFile(project / 'CampusQuiz-demo.jar', 'w', ZIP_DEFLATED) as jar:
         jar.writestr('META-INF/MANIFEST.MF',
                      'Manifest-Version: 1.0\r\nMain-Class: CampusQuiz\r\n\r\n')
