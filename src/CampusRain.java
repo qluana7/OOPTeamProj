@@ -54,6 +54,7 @@ public class CampusRain {
         final List<Building> catalog;final Random random;final List<Falling> falling=new ArrayList<>();
         State state=State.READY;int lives=5,hits=0;double elapsed=0,spawnIn=.75,errorUntil=-1;long nextId=0;Building lastCorrect;
         Game(List<Building> catalog,Random random){if(catalog.isEmpty())throw new IllegalArgumentException("건물이 필요합니다.");this.catalog=List.copyOf(catalog);this.random=random;}
+        void resetToReady(){state=State.READY;lives=5;hits=0;elapsed=0;spawnIn=.75;errorUntil=-1;nextId=0;lastCorrect=null;falling.clear();}
         void start(){state=State.PLAYING;lives=5;hits=0;elapsed=0;spawnIn=.75;errorUntil=-1;nextId=0;lastCorrect=null;falling.clear();while(falling.size()<maxOnScreen())spawn();}
         int maxOnScreen(){return 3+Math.min(2,(int)((elapsed+1e-8)/30));}
         void spawn(){
@@ -113,25 +114,33 @@ public class CampusRain {
     }
     static class GameView extends JPanel {
         final Game game;final BufferedImage image;final PlaceholderField input=new PlaceholderField();final DarkButton submit=new DarkButton("입력 ↵");
-        final Overlay overlay;final javax.swing.Timer timer;final boolean animate;long lastNanos;boolean composing,submissionQueued;
+        final Overlay overlay;final javax.swing.Timer timer;final boolean animate,stretch;long lastNanos;boolean composing,submissionQueued;
+        Runnable closeAction,gameOverAction;
         State syncedState;JRootPane syncedRoot;
         BufferedImage sceneCache,headerCache,infoCache,footerCache;int cacheWidth=-1,cacheHeight=-1,cachedLives=-1,cachedSeconds=-1,cachedHits=-1;double cachedSpeed=-1;
         Building cachedInfo;boolean infoBuilt;long sceneBuilds,headerBuilds,infoBuilds,footerBuilds,spriteBuilds;
         final FontMetrics wordMetrics=getFontMetrics(font(27,true));
         record SpriteKey(Building building,boolean urgent){} record Sprite(BufferedImage image){}
         final Map<SpriteKey,Sprite> sprites=new HashMap<>();
-        GameView(Game game,boolean animate){
-            this.game=game;this.animate=animate;image=background();setLayout(null);setBackground(new Color(236,245,255));setPreferredSize(new Dimension(1280,800));
+        GameView(Game game,boolean animate){this(game,animate,false);}
+        GameView(Game game,boolean animate,boolean stretch){
+            this.game=game;this.animate=animate;this.stretch=stretch;image=background();setLayout(null);setBackground(new Color(236,245,255));setPreferredSize(new Dimension(1280,800));
             add(input);add(submit);overlay=new Overlay(this);add(overlay);setComponentZOrder(overlay,0);
             input.addActionListener(e->submitAfterComposition());submit.addActionListener(e->submitAfterComposition());
             input.addInputMethodListener(new InputMethodListener(){public void inputMethodTextChanged(InputMethodEvent e){AttributedCharacterIterator it=e.getText();int total=it==null?0:it.getEndIndex()-it.getBeginIndex();composing=total>e.getCommittedCharacterCount();}public void caretPositionChanged(InputMethodEvent e){}});
             lastNanos=System.nanoTime();timer=new javax.swing.Timer(33,e->tick());timer.setCoalesce(true);sync();
         }
         double scale(){return Math.min(getWidth()/DESIGN_WIDTH,getHeight()/DESIGN_HEIGHT);}
-        double offsetX(){return (getWidth()-DESIGN_WIDTH*scale())/2;}
-        double offsetY(){return (getHeight()-DESIGN_HEIGHT*scale())/2;}
-        void place(Component c,int x,int y,int w,int h){double s=scale();c.setBounds((int)Math.round(offsetX()+x*s),(int)Math.round(offsetY()+y*s),(int)Math.round(w*s),(int)Math.round(h*s));}
-        @Override public void doLayout(){place(input,316,660,532,50);place(submit,848,660,116,50);input.setFont(font(Math.max(14,(int)(22*scale())),false));submit.setFont(font(Math.max(13,(int)(22*scale())),true));overlay.setBounds(0,0,getWidth(),getHeight());overlay.doLayout();}
+        double scaleX(){return scale();}
+        double scaleY(){return scale();}
+        double uiScale(){return scale();}
+        double offsetX(){return stretch?0:(getWidth()-DESIGN_WIDTH*scale())/2;}
+        double offsetY(){return stretch?0:(getHeight()-DESIGN_HEIGHT*scale())/2;}
+        double logicalHeight(){return getHeight()/scale();}
+        double mapY(double y){if(!stretch)return y;double extra=Math.max(0,logicalHeight()-DESIGN_HEIGHT);if(y<=208)return y;if(y<754)return 208+(y-208)*(1+extra/(754-208));return y+extra;}
+        double overlayCardY(){return stretch?Math.max(0,(logicalHeight()-292)/2):267;}
+        void place(Component c,int x,int y,int w,int h){c.setBounds((int)Math.round(offsetX()+x*scaleX()),(int)Math.round(offsetY()+mapY(y)*scaleY()),(int)Math.round(w*scaleX()),(int)Math.round(h*scaleY()));}
+        @Override public void doLayout(){place(input,316,660,532,50);place(submit,848,660,116,50);input.setFont(font(Math.max(14,(int)(22*uiScale())),false));submit.setFont(font(Math.max(13,(int)(22*uiScale())),true));overlay.setBounds(0,0,getWidth(),getHeight());overlay.doLayout();}
         void submitAfterComposition(){
             if(game.state!=State.PLAYING||submissionQueued)return;
             if(composing){submissionQueued=true;InputContext context=input.getInputContext();if(context!=null)context.endComposition();SwingUtilities.invokeLater(()->{submissionQueued=false;composing=false;submitInput();});}else submitInput();
@@ -145,25 +154,24 @@ public class CampusRain {
             if(root!=null&&(changed||syncedRoot!=root)){root.setDefaultButton(playing?submit:overlay.action);syncedRoot=root;}
         }
         void dispose(){timer.stop();}
-        void repaintRegion(double x,double y,double w,double h){double s=scale();int left=(int)Math.floor(offsetX()+x*s)-2,top=(int)Math.floor(offsetY()+y*s)-2;repaint(left,top,(int)Math.ceil(w*s)+4,(int)Math.ceil(h*s)+4);}
+        void repaintRegion(double x,double y,double w,double h){int left=(int)Math.floor(offsetX()+x*scaleX())-2,top=(int)Math.floor(offsetY()+mapY(y)*scaleY())-2;repaint(left,top,(int)Math.ceil(w*scaleX())+4,(int)Math.ceil((mapY(y+h)-mapY(y))*scaleY())+4);}
         void tick(){
             long now=System.nanoTime();double dt=Math.min(.10,Math.max(0,(now-lastNanos)/1_000_000_000.0));lastNanos=now;
             int oldLives=game.lives,oldSeconds=(int)game.elapsed;double oldSpeed=game.speed(),oldError=game.errorAlpha();game.advance(dt);
-            if(game.state!=syncedState){sync();return;}
+            if(game.state!=syncedState){boolean over=game.state==State.GAME_OVER;sync();if(over&&gameOverAction!=null)SwingUtilities.invokeLater(gameOverAction);return;}
             repaintRegion(0,208,DESIGN_WIDTH,DEADLINE-208+3);
             if(oldLives!=game.lives)repaintRegion(0,0,DESIGN_WIDTH,96);
             if(oldSeconds!=(int)game.elapsed||oldSpeed!=game.speed())repaintRegion(0,754,DESIGN_WIDTH,46);
             if(oldError>0||game.errorAlpha()>0)repaintRegion(0,604,DESIGN_WIDTH,44);
         }
         BufferedImage layer(int y,int height,java.util.function.Consumer<Graphics2D> paint){
-            double s=scale();BufferedImage result=new BufferedImage(Math.max(1,(int)Math.ceil(DESIGN_WIDTH*s)),Math.max(1,(int)Math.ceil(height*s)),BufferedImage.TYPE_INT_ARGB_PRE);
-            Graphics2D g=result.createGraphics();quality(g);g.scale(s,s);g.translate(0,-y);paint.accept(g);g.dispose();return result;
+            double sx=scaleX(),sy=scaleY();BufferedImage result=new BufferedImage(Math.max(1,(int)Math.ceil(DESIGN_WIDTH*sx)),Math.max(1,(int)Math.ceil(height*sy)),BufferedImage.TYPE_INT_ARGB_PRE);
+            Graphics2D g=result.createGraphics();quality(g);g.scale(sx,sy);g.translate(0,-y);paint.accept(g);g.dispose();return result;
         }
         void ensureCaches(){
             if(getWidth()!=cacheWidth||getHeight()!=cacheHeight){
                 cacheWidth=getWidth();cacheHeight=getHeight();sprites.clear();cachedLives=-1;infoBuilt=false;cachedSeconds=-1;
-                sceneCache=new BufferedImage(Math.max(1,cacheWidth),Math.max(1,cacheHeight),BufferedImage.TYPE_INT_RGB);Graphics2D bg=sceneCache.createGraphics();quality(bg);bg.setColor(getBackground());bg.fillRect(0,0,cacheWidth,cacheHeight);bg.translate(offsetX(),offsetY());bg.scale(scale(),scale());
-                bg.setColor(new Color(235,245,255));bg.fillRect(0,0,(int)DESIGN_WIDTH,(int)DESIGN_HEIGHT);if(image!=null)bg.drawImage(image,0,0,(int)DESIGN_WIDTH,(int)DESIGN_HEIGHT,null);paintDeadline(bg);paintInputStatic(bg);bg.dispose();sceneBuilds++;
+                sceneCache=new BufferedImage(Math.max(1,cacheWidth),Math.max(1,cacheHeight),BufferedImage.TYPE_INT_RGB);Graphics2D bg=sceneCache.createGraphics();quality(bg);bg.setColor(getBackground());bg.fillRect(0,0,cacheWidth,cacheHeight);if(image!=null)bg.drawImage(image,0,0,cacheWidth,cacheHeight,null);bg.translate(offsetX(),offsetY());bg.scale(scaleX(),scaleY());bg.setColor(new Color(235,245,255,120));bg.fillRect(0,0,(int)DESIGN_WIDTH,(int)logicalHeight());paintDeadline(bg);paintInputStatic(bg);bg.dispose();sceneBuilds++;
             }
             if(cachedLives!=game.lives){headerCache=layer(0,96,this::paintHeader);cachedLives=game.lives;headerBuilds++;}
             if(!infoBuilt||cachedInfo!=game.lastCorrect){infoCache=layer(96,112,this::paintInfo);cachedInfo=game.lastCorrect;infoBuilt=true;infoBuilds++;}
@@ -171,22 +179,22 @@ public class CampusRain {
                 footerCache=layer(754,46,this::paintFooter);cachedSeconds=(int)game.elapsed;cachedHits=game.hits;cachedSpeed=game.speed();footerBuilds++;
             }
         }
-        void blit(Graphics2D g,BufferedImage image,int logicalY){g.drawImage(image,(int)Math.round(offsetX()),(int)Math.round(offsetY()+logicalY*scale()),null);}
+        void blit(Graphics2D g,BufferedImage image,int logicalY){g.drawImage(image,(int)Math.round(offsetX()),(int)Math.round(offsetY()+mapY(logicalY)*scaleY()),null);}
         @Override protected void paintComponent(Graphics graphics){
             super.paintComponent(graphics);if(getWidth()<1||getHeight()<1)return;ensureCaches();Graphics2D g=(Graphics2D)graphics.create();g.drawImage(sceneCache,0,0,null);blit(g,headerCache,0);blit(g,infoCache,96);blit(g,footerCache,754);paintSprites(g);
-            if(game.errorAlpha()>0){g.translate(offsetX(),offsetY());g.scale(scale(),scale());quality(g);paintError(g);}g.dispose();
+            if(game.errorAlpha()>0){g.translate(offsetX(),offsetY());g.scale(scaleX(),scaleY());quality(g);paintError(g);}g.dispose();
         }
         Sprite sprite(Building building,boolean urgent){
             SpriteKey key=new SpriteKey(building,urgent);Sprite cached=sprites.get(key);if(cached!=null)return cached;
-            double width=wordMetrics.stringWidth(building.name())+32,s=scale();BufferedImage image=new BufferedImage(Math.max(1,(int)Math.ceil(width*s)+2),Math.max(1,(int)Math.ceil((TAG_HEIGHT+38)*s)+2),BufferedImage.TYPE_INT_ARGB_PRE);
-            Graphics2D g=image.createGraphics();quality(g);g.scale(s,s);g.setColor(urgent?new Color(239,177,65,130):new Color(85,142,205,110));g.setStroke(new BasicStroke(2.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND));
+            double width=wordMetrics.stringWidth(building.name())+32,sx=scaleX(),sy=scaleY();BufferedImage image=new BufferedImage(Math.max(1,(int)Math.ceil(width*sx)+2),Math.max(1,(int)Math.ceil((TAG_HEIGHT+38)*sy)+2),BufferedImage.TYPE_INT_ARGB_PRE);
+            Graphics2D g=image.createGraphics();quality(g);g.scale(sx,sy);g.setColor(urgent?new Color(239,177,65,130):new Color(85,142,205,110));g.setStroke(new BasicStroke(2.5f,BasicStroke.CAP_ROUND,BasicStroke.JOIN_ROUND));
             for(int i=0;i<3;i++){double xx=width/2+(i-1)*15;g.draw(new Line2D.Double(xx,11-(i%2)*8,xx,28));}
             g.setColor(urgent?new Color(255,232,177,235):new Color(255,255,255,220));g.fill(new RoundRectangle2D.Double(0,38,width,TAG_HEIGHT,17,17));g.setFont(font(27,true));g.setColor(INK);g.drawString(building.name(),16,38+(float)(TAG_HEIGHT-wordMetrics.getHeight())/2+wordMetrics.getAscent());g.dispose();
             Sprite result=new Sprite(image);sprites.put(key,result);spriteBuilds++;return result;
         }
         void paintSprites(Graphics2D g){
-            Shape clip=g.getClip();g.clip(new Rectangle2D.Double(offsetX(),offsetY()+208*scale(),DESIGN_WIDTH*scale(),(DEADLINE-208)*scale()));
-            for(Falling falling:game.falling){Rectangle2D rect=wordBounds(falling,wordMetrics);Sprite sprite=sprite(falling.building,falling.progress>.78);g.drawImage(sprite.image(),(int)Math.round(offsetX()+rect.getX()*scale()),(int)Math.round(offsetY()+(rect.getY()-38)*scale()),null);}g.setClip(clip);
+            Shape clip=g.getClip();g.clip(new Rectangle2D.Double(offsetX(),offsetY()+mapY(208)*scaleY(),DESIGN_WIDTH*scaleX(),(mapY(DEADLINE)-mapY(208))*scaleY()));
+            for(Falling falling:game.falling){Rectangle2D rect=wordBounds(falling,wordMetrics);Sprite sprite=sprite(falling.building,falling.progress>.78);g.drawImage(sprite.image(),(int)Math.round(offsetX()+rect.getX()*scaleX()),(int)Math.round(offsetY()+mapY(rect.getY()-38)*scaleY()),null);}g.setClip(clip);
         }
         void paintHeader(Graphics2D g){
             g.setPaint(new GradientPaint(0,0,new Color(255,255,255,225),1280,96,new Color(223,237,255,175)));g.fillRect(0,0,1280,96);
@@ -205,29 +213,29 @@ public class CampusRain {
             String desc=game.lastCorrect==null?"떨어지는 건물 이름을 입력하면 이름과 설명이 여기에 표시됩니다.":game.lastCorrect.description();paragraph(g,desc,345,153,890,22,2,INK);
         }
         Rectangle2D wordBounds(Falling f,FontMetrics metrics){double width=metrics.stringWidth(f.building.name())+32;double x=24+f.horizontal*(DESIGN_WIDTH-width-48);double y=FIELD_TOP+f.progress*(DEADLINE-FIELD_TOP-TAG_HEIGHT);return new Rectangle2D.Double(x,y,width,TAG_HEIGHT);}
-        void paintDeadline(Graphics2D g){g.setColor(RED);g.setStroke(new BasicStroke(3,BasicStroke.CAP_BUTT,BasicStroke.JOIN_ROUND,1,new float[]{13,8},0));g.draw(new Line2D.Double(0,DEADLINE,DESIGN_WIDTH,DEADLINE));String caption="이 선을 넘으면 생명 -1";g.setFont(font(18,true));drawText(g,caption,1250-g.getFontMetrics().stringWidth(caption),DEADLINE-14,18,true,RED);}
+        void paintDeadline(Graphics2D g){g.setColor(RED);g.setStroke(new BasicStroke(3,BasicStroke.CAP_BUTT,BasicStroke.JOIN_ROUND,1,new float[]{13,8},0));g.draw(new Line2D.Double(0,mapY(DEADLINE),DESIGN_WIDTH,mapY(DEADLINE)));String caption="이 선을 넘으면 생명 -1";g.setFont(font(18,true));drawText(g,caption,1250-g.getFontMetrics().stringWidth(caption),mapY(DEADLINE)-14,18,true,RED);}
         void paintError(Graphics2D g){
-            double alpha=game.errorAlpha();if(alpha>0){String message="틀린 이름입니다";g.setComposite(AlphaComposite.SrcOver.derive((float)alpha));g.setFont(font(27,true));g.setColor(RED);g.drawString(message,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(message))/2),635);g.setComposite(AlphaComposite.SrcOver);}
+            double alpha=game.errorAlpha();if(alpha>0){String message="틀린 이름입니다";g.setComposite(AlphaComposite.SrcOver.derive((float)alpha));g.setFont(font(27,true));g.setColor(RED);g.drawString(message,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(message))/2),(float)mapY(635));g.setComposite(AlphaComposite.SrcOver);}
         }
         void paintInputStatic(Graphics2D g){
-            g.setColor(Color.WHITE);g.fillRoundRect(315,659,650,52,13,13);g.setColor(new Color(83,94,110));g.setStroke(new BasicStroke(1.4f));g.drawRoundRect(315,659,650,52,13,13);
-            String hint="Enter로 제출 · 오타는 생명이 줄지 않아요";g.setFont(font(16,false));g.setColor(new Color(83,94,110));g.drawString(hint,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(hint))/2),736);
+            g.setColor(Color.WHITE);g.fillRoundRect(315,(int)mapY(659),650,52,13,13);g.setColor(new Color(83,94,110));g.setStroke(new BasicStroke(1.4f));g.drawRoundRect(315,(int)mapY(659),650,52,13,13);
+            String hint="Enter로 제출 · 오타는 생명이 줄지 않아요";g.setFont(font(16,false));g.setColor(new Color(83,94,110));g.drawString(hint,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(hint))/2),(float)mapY(736));
         }
         void paintFooter(Graphics2D g){g.setColor(new Color(214,225,240,210));g.fillRect(0,754,1280,46);drawText(g,"맞힌 건물  "+game.hits,30,784,21,true,INK);String status="진행 시간  "+time(game.elapsed)+"   ·   낙하 속도  ×"+String.format(Locale.ROOT,"%.1f",game.speed());g.setFont(font(20,true));g.setColor(INK);g.drawString(status,1250-g.getFontMetrics().stringWidth(status),784);}
     }
     static class Overlay extends JPanel {
         final GameView view;final DarkButton action=new DarkButton("게임 시작하기"),close=new DarkButton("종료");
-        Overlay(GameView view){this.view=view;setLayout(null);setOpaque(false);addMouseListener(new MouseAdapter(){});add(action);add(close);action.addActionListener(e->view.startOrResume());close.addActionListener(e->{view.dispose();Window window=SwingUtilities.getWindowAncestor(view);if(window!=null)window.dispose();});}
-        void place(Component component,int x,int y,int w,int h){double s=view.scale();component.setBounds((int)(view.offsetX()+x*s),(int)(view.offsetY()+y*s),(int)(w*s),(int)(h*s));}
-        @Override public void doLayout(){place(action,420,482,320,48);place(close,752,482,108,48);action.setFont(font(Math.max(14,(int)(20*view.scale())),true));close.setFont(action.getFont());}
-        @Override protected void paintComponent(Graphics graphics){Graphics2D g=(Graphics2D)graphics.create();quality(g);g.setColor(new Color(239,246,255,170));g.fillRect(0,0,getWidth(),getHeight());g.translate(view.offsetX(),view.offsetY());g.scale(view.scale(),view.scale());g.setColor(new Color(255,255,255,245));g.fillRoundRect(360,267,560,292,24,24);g.setColor(new Color(195,210,229));g.setStroke(new BasicStroke(1));g.drawRoundRect(360,267,560,292,24,24);
-            State state=view.game.state;String title=state==State.READY?"건물 이름이 비처럼 내려요":state==State.PAUSED?"잠시 멈췄어요":"게임 종료";g.setFont(font(30,true));g.setColor(INK);g.drawString(title,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(title))/2),325);
+        Overlay(GameView view){this.view=view;setLayout(null);setOpaque(false);addMouseListener(new MouseAdapter(){});add(action);add(close);action.addActionListener(e->view.startOrResume());close.addActionListener(e->{view.dispose();if(view.closeAction!=null)view.closeAction.run();else{Window window=SwingUtilities.getWindowAncestor(view);if(window!=null)window.dispose();}});}
+        void place(Component component,int x,int y,int w,int h){component.setBounds((int)(view.offsetX()+x*view.scaleX()),(int)(view.offsetY()+y*view.scaleY()),(int)(w*view.scaleX()),(int)(h*view.scaleY()));}
+        @Override public void doLayout(){int cardY=(int)Math.round(view.overlayCardY());place(action,420,cardY+215,320,48);place(close,752,cardY+215,108,48);action.setFont(font(Math.max(14,(int)(20*view.uiScale())),true));close.setFont(action.getFont());}
+        @Override protected void paintComponent(Graphics graphics){Graphics2D g=(Graphics2D)graphics.create();quality(g);g.setColor(new Color(239,246,255,170));g.fillRect(0,0,getWidth(),getHeight());g.translate(view.offsetX(),view.offsetY());g.scale(view.scaleX(),view.scaleY());int cardY=(int)Math.round(view.overlayCardY());g.setColor(new Color(255,255,255,245));g.fillRoundRect(360,cardY,560,292,24,24);g.setColor(new Color(195,210,229));g.setStroke(new BasicStroke(1));g.drawRoundRect(360,cardY,560,292,24,24);
+            State state=view.game.state;String title=state==State.READY?"건물 이름이 비처럼 내려요":state==State.PAUSED?"잠시 멈췄어요":"게임 종료";g.setFont(font(30,true));g.setColor(INK);g.drawString(title,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(title))/2),cardY+58);
             String details=state==State.READY?"이름을 입력하고 Enter를 눌러 건물 설명을 알아보세요.\n붉은 선을 넘긴 이름 5개가 쌓이면 게임이 끝나요.\n오타는 생명을 줄이지 않아요.":state==State.PAUSED?"창을 벗어나 게임을 일시 정지했습니다.\n준비되면 계속하기를 눌러 주세요.":"맞힌 건물 "+view.game.hits+"개  ·  플레이 시간 "+time(view.game.elapsed)+"\n놓친 이름 5개로 하트가 모두 회색이 되었어요.\n다시 도전해서 더 많은 건물을 알아보세요.";
-            int y=378;for(String line:details.split("\n")){g.setFont(font(17,false));g.setColor(new Color(80,92,108));g.drawString(line,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(line))/2),y);y+=29;}g.dispose();
+            int y=cardY+111;for(String line:details.split("\n")){g.setFont(font(17,false));g.setColor(new Color(80,92,108));g.drawString(line,(float)((DESIGN_WIDTH-g.getFontMetrics().stringWidth(line))/2),y);y+=29;}g.dispose();
         }
     }
     static JFrame rainFrame;
-    /** Opens the rain game from the quiz without replacing the quiz window. */
+    /** Opens the rain game as a standalone window when run independently. */
     static void openWindow(){
         if(GraphicsEnvironment.isHeadless())return;
         Runnable open=()->{try{List<Building> buildings=loadBuildings();if(rainFrame!=null&&rainFrame.isDisplayable()){rainFrame.toFront();rainFrame.requestFocus();return;}
