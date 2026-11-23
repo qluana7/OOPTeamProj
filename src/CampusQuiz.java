@@ -7,9 +7,9 @@ import java.io.*;
 import java.util.*;
 import javax.imageio.ImageIO;
 
-/** Interactive Swing presentation of the thirteen ref.pdf screens. Demo data only. */
+/** Interactive Swing presentation of the ref.pdf screens, with an Academic Life plate-shoot demo. */
 public class CampusQuiz {
-    enum Screen { WELCOME, GUIDE, PARTS, INTRO, QUESTION, SELECTED, CORRECT, INCORRECT, EXIT, PART_DONE, FINAL, REVIEW, REVIEW_DETAIL }
+    enum Screen { WELCOME, GUIDE, PARTS, INTRO, QUESTION, SELECTED, PLATE_GAME, CORRECT, INCORRECT, EXIT, PART_DONE, FINAL, REVIEW, REVIEW_DETAIL }
     static final int WIDTH=1000, HEIGHT=1080;
     static final Color INK=new Color(16,17,18), MUTED=new Color(101,106,115), LINE=new Color(211,212,217), PALE=new Color(243,244,246), BLUE=new Color(236,243,253), RED=new Color(190,64,55);
     static final String[] PARTS={"KGU CAMPUS GUIDE","ACADEMIC LIFE","BUILDING QUIZ"};
@@ -46,26 +46,89 @@ public class CampusQuiz {
     final DesignCanvas root=new DesignCanvas();
     final Map<String,BufferedImage> images=new HashMap<>();
     Screen screen=Screen.WELCOME, beforeExit=Screen.SELECTED;
-    int part=0, selected=-1, reviewIndex=0, questionIndex=0, partScore=0;
+    int part=0, selected=-1, reviewIndex=0, questionIndex=0, partScore=0, plateRound=0;
     int[] partScores={0,0,0};
     final java.util.List<MissedQuestion> missed=new ArrayList<>();
     int reviewPage=0;
     JFrame frame;
     record Hotspot(String name,Rectangle2D.Double bounds,Runnable action,boolean enabled){}
     final java.util.List<Hotspot> hotspots=new ArrayList<>();
+    static final class FlyingPlate {
+        int id, factIndex;
+        double x,y,vx,vy,gravity;
+        FlyingPlate(int id,int factIndex,double x,double y,double vx,double vy,double gravity){this.id=id;this.factIndex=factIndex;this.x=x;this.y=y;this.vx=vx;this.vy=vy;this.gravity=gravity;}
+    }
+    static final class ShotEffect { double x,y,expires; boolean hit,correct; ShotEffect(double x,double y,double expires,boolean hit,boolean correct){this.x=x;this.y=y;this.expires=expires;this.hit=hit;this.correct=correct;} }
+    final java.util.List<FlyingPlate> flyingPlates=new ArrayList<>();
+    final java.util.List<ShotEffect> shotEffects=new ArrayList<>();
+    final Random plateRandom=new Random();
+    javax.swing.Timer plateTimer;
+    int nextPlateId=1, nextSpawnMs=850, spawnOptionCursor=0;
+    double aimX=500, aimY=520;
+    boolean pendingPlateOutcome=false, outcomeCorrect=false;
 
     static InputStream resource(String path)throws IOException{InputStream in=CampusQuiz.class.getResourceAsStream("/"+path);return in!=null?in:new FileInputStream(path);}
     static Font loadFont(String name,String fallback,int style){try(InputStream in=resource("assets/fonts/"+name)){return Font.createFont(Font.TRUETYPE_FONT,in);}catch(Exception e){return new Font(fallback,style,20);}}
     static void loadFonts(){regular=loadFont("NotoSansKR-Regular.otf","Noto Sans CJK KR",Font.PLAIN);bold=loadFont("NotoSansKR-Bold.otf","Noto Sans CJK KR",Font.BOLD);black=loadFont("NotoSansKR-Black.otf","Noto Sans CJK KR Black",Font.BOLD);}
     CampusQuiz(){for(String n:new String[]{"welcome-campus","part-campus","intro-campus","question-campus","feedback-campus","result-campus","academic","program","good-start","start-script","nice-work","trophy","clock","star","celebration","building-first-lecture","building-library","building-convention"})try(InputStream in=resource("assets/images/"+n+".png")){BufferedImage im=ImageIO.read(in);if(im==null)throw new IOException(n);images.put(n,im);}catch(IOException e){throw new IllegalStateException("Missing design asset: "+n,e);}show(Screen.WELCOME);}
-    void show(Screen next){screen=next;rebuild();}
+    void show(Screen next){if(screen==Screen.PLATE_GAME&&next!=Screen.PLATE_GAME)stopPlateTimer();screen=next;rebuild();if(next==Screen.PLATE_GAME)startPlateTimer();}
     void choose(int index){selected=index;show(Screen.SELECTED);}
-    void startPart(int index){part=index;selected=-1;questionIndex=0;partScore=0;partScores[index]=0;missed.removeIf(m->m.part()==index);show(Screen.INTRO);}
+    void startPart(int index){part=index;selected=-1;questionIndex=0;plateRound=0;partScore=0;partScores[index]=0;missed.removeIf(m->m.part()==index);show(Screen.INTRO);}
     QuizQuestion currentQuestion(){return part==0?CAMPUS_QUIZ[questionIndex]:part==1?ACADEMIC_QUIZ[questionIndex]:BUILDING_QUIZ[questionIndex];}
     int questionCount(){return part==0?CAMPUS_QUIZ.length:part==1?ACADEMIC_QUIZ.length:BUILDING_QUIZ.length;}
     int totalQuestionCount(){return CAMPUS_QUIZ.length+ACADEMIC_QUIZ.length+BUILDING_QUIZ.length;}
     void nextAfterFeedback(){if(screen==Screen.CORRECT)partScore+=10;else missed.add(new MissedQuestion(part,questionIndex+1,currentQuestion(),selected));selected=-1;questionIndex++;if(questionIndex<questionCount())show(Screen.QUESTION);else{partScores[part]=partScore;show(Screen.PART_DONE);}}
-    void reset(){part=0;selected=-1;reviewIndex=0;reviewPage=0;questionIndex=0;partScore=0;Arrays.fill(partScores,0);missed.clear();show(Screen.WELCOME);}
+    void reset(){part=0;selected=-1;reviewIndex=0;reviewPage=0;questionIndex=0;plateRound=0;partScore=0;pendingPlateOutcome=false;outcomeCorrect=false;flyingPlates.clear();shotEffects.clear();Arrays.fill(partScores,0);missed.clear();show(Screen.WELCOME);}
+    void startPlateGame(){selected=-1;questionIndex=0;plateRound=0;partScore=0;pendingPlateOutcome=false;outcomeCorrect=false;flyingPlates.clear();shotEffects.clear();nextPlateId=1;nextSpawnMs=850;spawnOptionCursor=0;aimX=500;aimY=520;show(Screen.PLATE_GAME);}
+    void shootPlate(int target){
+        if(part!=1||screen!=Screen.PLATE_GAME)return;
+        if(pendingPlateOutcome)return;
+        FlyingPlate hit=null;for(FlyingPlate p:flyingPlates)if(p.id==target){hit=p;break;}if(hit==null)return;
+        flyingPlates.remove(hit);
+        outcomeCorrect=hit.factIndex==currentQuestion().answer();pendingPlateOutcome=true;plateRound++;if(outcomeCorrect)partScore+=10;else missed.add(new MissedQuestion(part,questionIndex+1,currentQuestion(),hit.factIndex));
+        rebuild();
+    }
+    void startPlateTimer(){
+        if(plateTimer==null){plateTimer=new javax.swing.Timer(33,e->tickPlateGame());plateTimer.setCoalesce(true);}
+        if(!plateTimer.isRunning())plateTimer.start();
+    }
+    void stopPlateTimer(){if(plateTimer!=null)plateTimer.stop();}
+    void spawnFlyingPlate(){
+        boolean fromLeft=plateRandom.nextBoolean();double y=560+plateRandom.nextDouble()*100;double speed=7.0+plateRandom.nextDouble()*2.2;
+        double x=fromLeft?-92:1092;double vx=fromLeft?speed:-speed;double vy=-(2.2+plateRandom.nextDouble()*.8);int fact=spawnOptionCursor++%4;
+        flyingPlates.add(new FlyingPlate(nextPlateId++,fact,x,y,vx,vy,.038+plateRandom.nextDouble()*.01));
+    }
+    void spawnPreviewPlates(){
+        flyingPlates.clear();nextPlateId=1;
+        spawnOptionCursor=0;
+        flyingPlates.add(new FlyingPlate(nextPlateId++,0,245,470,7.2,-.8,.042));
+        flyingPlates.add(new FlyingPlate(nextPlateId++,1,552,555,-8.0,-.35,.042));
+        flyingPlates.add(new FlyingPlate(nextPlateId++,2,815,430,-7.0,.55,.042));
+        flyingPlates.add(new FlyingPlate(nextPlateId++,3,720,620,-7.5,-.2,.042));
+    }
+    void tickPlateGame(){
+        if(screen!=Screen.PLATE_GAME)return;
+        double now=System.currentTimeMillis();
+        if(pendingPlateOutcome){shotEffects.removeIf(s->s.expires<=now);rebuild();return;}
+        for(FlyingPlate p:flyingPlates){p.x+=p.vx;p.y+=p.vy;p.vy+=p.gravity;}
+        flyingPlates.removeIf(p->p.x<-180||p.x>1180||p.y>880);
+        nextSpawnMs-=33;if(nextSpawnMs<=0){if(flyingPlates.size()<4)spawnFlyingPlate();nextSpawnMs=430+plateRandom.nextInt(600);}
+        shotEffects.removeIf(s->s.expires<=now);
+        rebuild();
+    }
+    void resolvePlateOutcome(){
+        if(!pendingPlateOutcome||screen!=Screen.PLATE_GAME)return;
+        pendingPlateOutcome=false;questionIndex++;flyingPlates.clear();spawnOptionCursor=0;nextSpawnMs=850;
+        if(plateRound>=questionCount()){partScores[part]=partScore;show(Screen.PART_DONE);}else rebuild();
+    }
+    double plateVerticalScale(FlyingPlate p){return .68;}
+    void fireAt(double x,double y){
+        if(screen!=Screen.PLATE_GAME||pendingPlateOutcome)return;aimX=Math.max(58,Math.min(942,x));aimY=Math.max(190,Math.min(828,y));
+        FlyingPlate hit=null;double nearest=Double.MAX_VALUE;
+        for(FlyingPlate p:flyingPlates){double dx=x-p.x,dy=y-p.y,scale=plateVerticalScale(p),distance=(dx/80)*(dx/80)+(dy/(38*scale))*(dy/(38*scale));if(distance<=1.0&&distance<nearest){nearest=distance;hit=p;}}
+        boolean correct=hit!=null&&hit.factIndex==currentQuestion().answer();shotEffects.add(new ShotEffect(aimX,aimY,System.currentTimeMillis()+150,hit!=null,correct));
+        if(hit!=null)shootPlate(hit.id);else rebuild();
+    }
     void nextPart(){if(part<2)startPart(part+1);else show(Screen.FINAL);}
     void exitQuiz(){beforeExit=screen;show(Screen.EXIT);}
     void hit(String name,double x,double y,double w,double h,boolean enabled,Runnable action){hotspots.add(new Hotspot(name,new Rectangle2D.Double(x,y,w,h),action,enabled));}
@@ -81,8 +144,9 @@ public class CampusQuiz {
     class DesignCanvas extends JPanel {
         double scale=1,ox,oy;
         DesignCanvas(){setLayout(null);setBackground(new Color(229,230,233));setPreferredSize(new Dimension(800,864));getAccessibleContext().setAccessibleName("KGU QUIZ 화면");
-            Point[] drag={null};addMouseListener(new MouseAdapter(){public void mousePressed(MouseEvent e){if(frame!=null&&(e.getY()-oy)/scale<40)drag[0]=e.getPoint();}public void mouseReleased(MouseEvent e){drag[0]=null;}});addMouseMotionListener(new MouseMotionAdapter(){public void mouseDragged(MouseEvent e){if(frame!=null&&drag[0]!=null){Point p=e.getLocationOnScreen();frame.setLocation(p.x-drag[0].x,p.y-drag[0].y);}}});
+            Point[] drag={null};addMouseListener(new MouseAdapter(){public void mousePressed(MouseEvent e){double logicalY=(e.getY()-oy)/scale;if(screen==Screen.PLATE_GAME&&SwingUtilities.isLeftMouseButton(e)&&logicalY>=40){updateAim(e);fireAt(aimX,aimY);return;}if(frame!=null&&logicalY<40)drag[0]=e.getPoint();}public void mouseReleased(MouseEvent e){drag[0]=null;}});addMouseMotionListener(new MouseMotionAdapter(){public void mouseMoved(MouseEvent e){if(screen==Screen.PLATE_GAME)updateAim(e);}public void mouseDragged(MouseEvent e){if(screen==Screen.PLATE_GAME)updateAim(e);if(frame!=null&&drag[0]!=null){Point p=e.getLocationOnScreen();frame.setLocation(p.x-drag[0].x,p.y-drag[0].y);}}});
         }
+        void updateAim(MouseEvent e){geometry();aimX=Math.max(58,Math.min(942,(e.getX()-ox)/scale));aimY=Math.max(190,Math.min(828,(e.getY()-oy)/scale));repaint();}
         void geometry(){scale=Math.min(getWidth()/(double)CampusQuiz.WIDTH,getHeight()/(double)CampusQuiz.HEIGHT);ox=(getWidth()-CampusQuiz.WIDTH*scale)/2;oy=(getHeight()-CampusQuiz.HEIGHT*scale)/2;}
         public void doLayout(){geometry();for(Component child:getComponents()){Rectangle2D r=(Rectangle2D)((JComponent)child).getClientProperty("bounds");child.setBounds((int)Math.round(ox+r.getX()*scale),(int)Math.round(oy+r.getY()*scale),(int)Math.round(r.getWidth()*scale),(int)Math.round(r.getHeight()*scale));}}
         protected void paintComponent(Graphics graphics){super.paintComponent(graphics);geometry();Graphics2D g=(Graphics2D)graphics.create();g.translate(ox,oy);g.scale(scale,scale);g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,RenderingHints.VALUE_INTERPOLATION_BICUBIC);draw(g,false);g.dispose();}
@@ -124,7 +188,7 @@ public class CampusQuiz {
     void backbar(Graphics2D g,boolean b,String label,String meta,Runnable action){arrow(g,70,110,false,INK);text(g,label,94,92,21,bold,INK);text(g,meta,840-meta.length()*3,96,18,regular,MUTED);if(b)hit(label,52,83,350,45,true,action);}
     void checkIcon(Graphics2D g,int x,int y,int size,boolean correct){g.setColor(correct?INK:RED);g.fillOval(x,y,size,size);g.setColor(Color.WHITE);g.setStroke(new BasicStroke(2));if(correct){g.draw(new Line2D.Double(x+size*.30,y+size*.51,x+size*.44,y+size*.65));g.draw(new Line2D.Double(x+size*.44,y+size*.65,x+size*.70,y+size*.36));}else{g.draw(new Line2D.Double(x+size*.35,y+size*.35,x+size*.65,y+size*.65));g.draw(new Line2D.Double(x+size*.65,y+size*.35,x+size*.35,y+size*.65));}}
     void titlebar(Graphics2D g,boolean b){g.setColor(new Color(243,244,246));g.fillRect(0,0,1000,40);line(g,0,40,1000,LINE);g.setColor(INK);g.fillOval(18,9,22,22);center(g,"KGU",18,13,22,8,bold,Color.WHITE);text(g,"KGU QUIZ",51,10,17,regular,INK);g.setStroke(new BasicStroke(1.5f));g.setColor(INK);g.drawLine(870,22,880,22);g.drawRect(919,13,12,12);g.drawLine(970,16,979,25);g.drawLine(979,16,970,25);if(b){hit("최소화",850,0,50,40,true,()->{if(frame!=null)frame.setState(Frame.ICONIFIED);});hit("창 크기 변경",900,0,50,40,true,()->{if(frame!=null)frame.setExtendedState(frame.getExtendedState()==Frame.MAXIMIZED_BOTH?Frame.NORMAL:Frame.MAXIMIZED_BOTH);});hit("창 닫기",950,0,50,40,true,()->{if(frame!=null)frame.dispose();});}}
-    void draw(Graphics2D g,boolean b){g.setColor(Color.WHITE);g.fillRect(0,0,1000,1080);switch(screen){case WELCOME->welcome(g,b);case GUIDE->guide(g,b);case PARTS->parts(g,b);case INTRO->intro(g,b);case QUESTION,SELECTED->question(g,b);case CORRECT,INCORRECT->feedback(g,b);case EXIT->{question(g,false);exitModal(g,b);}case PART_DONE->partDone(g,b);case FINAL->finalResult(g,b);case REVIEW->reviewActual(g,b);case REVIEW_DETAIL->reviewDetailActual(g,b);}titlebar(g,b);}
+    void draw(Graphics2D g,boolean b){g.setColor(Color.WHITE);g.fillRect(0,0,1000,1080);switch(screen){case WELCOME->welcome(g,b);case GUIDE->guide(g,b);case PARTS->parts(g,b);case INTRO->intro(g,b);case QUESTION,SELECTED->question(g,b);case PLATE_GAME->plateGame(g,b);case CORRECT,INCORRECT->feedback(g,b);case EXIT->{if(part==1)plateGame(g,false);else question(g,false);exitModal(g,b);}case PART_DONE->partDone(g,b);case FINAL->finalResult(g,b);case REVIEW->reviewActual(g,b);case REVIEW_DETAIL->reviewDetailActual(g,b);}titlebar(g,b);}
     void welcome(Graphics2D g,boolean b){
         photo(g,"welcome-campus",300,40,700,1040,false);fade(g,300,40,400,1040,false);g.setColor(INK);g.fillRect(0,60,21,160);
         text(g,"KYONGGI\nUNIVERSITY",70,80,24,bold,Color.BLACK);text(g,"NEW STUDENT\nQUIZ PROGRAM",760,81,22,bold,Color.BLACK);
@@ -137,7 +201,7 @@ public class CampusQuiz {
     void guide(Graphics2D g,boolean b){
         backbar(g,b,"이용 안내","HOW TO PLAY",()->show(Screen.WELCOME));text(g,"시작 전, 잠깐 알아볼까요?",58,150,54,black,INK);text(g,"퀴즈로 만나는 경기대학교, 가볍게 풀고 새롭게 알아가세요.",58,232,22,regular,MUTED);
         round(g,58,292,884,122,10,PALE,null);String[] vals={"3개",totalQuestionCount()+"문항","10점",(totalQuestionCount()*10)+"점"},labels={"퀴즈 파트","총 문항 수","정답 1개당","총점"};for(int i=0;i<4;i++){center(g,vals[i],80+i*220,314,190,38,black,Color.BLACK);center(g,labels[i],80+i*220,367,190,19,regular,MUTED);}
-        String[] heads={"원하는 파트를 선택해요","답을 고르고 해설을 확인해요","결과를 확인하고 오답을 복습해요"};String[] desc={"캠퍼스 안내와 학사·학습생활, 건물 사진 퀴즈까지\n세 가지 주제를 차례로 만나보세요.","문항마다 하나의 답변을 선택해 주세요.\n정답과 해설로 학교생활 정보를 익힐 수 있어요.","세 파트를 모두 마치면 최종 결과가 나와요.\n틀린 문제는 모아서 다시 살펴볼 수 있어요."};for(int i=0;i<3;i++){int y=444+i*130;text(g,"0"+(i+1),58,y,44,black,Color.BLACK);text(g,heads[i],148,y+2,27,bold,INK);text(g,desc[i],148,y+45,22,regular,MUTED);}
+        String[] heads={"원하는 파트를 선택해요","답을 고르거나 접시를 쏴요","결과를 확인하고 오답을 복습해요"};String[] desc={"캠퍼스 안내와 학사·학습생활, 건물 사진 퀴즈까지\n세 가지 주제를 차례로 만나보세요.","첫 번째·세 번째 파트는 문제를 풀고,\n두 번째 파트는 날아오는 접시를 클릭해요.","세 파트를 모두 마치면 최종 결과가 나와요.\n틀린 문제는 모아서 다시 살펴볼 수 있어요."};for(int i=0;i<3;i++){int y=444+i*130;text(g,"0"+(i+1),58,y,44,black,Color.BLACK);text(g,heads[i],148,y+2,27,bold,INK);text(g,desc[i],148,y+45,22,regular,MUTED);}
         line(g,58,840,884,LINE);text(g,"ⓘ  오답은 0점이며 감점은 없어요. 정답률과 소요 시간은 최종 결과에서 확인할 수 있어요.",58,868,19,regular,MUTED);pill(g,b,"확인했어요 · 파트 선택하기",58,928,884,true,true,true,()->show(Screen.PARTS));
     }
     void parts(Graphics2D g,boolean b){
@@ -146,8 +210,8 @@ public class CampusQuiz {
     }
     void intro(Graphics2D g,boolean b){
         backbar(g,b,"파트 선택","PART 0"+(part+1)+" / 03",()->show(Screen.PARTS));Shape old=g.getClip();g.clip(new RoundRectangle2D.Double(58,156,884,345,10,10));photo(g,new String[]{"intro-campus","academic","building-convention","good-start","start-script","nice-work","trophy","clock","star","celebration"}[part],58,156,884,345,false);g.setColor(new Color(0,0,0,90));g.fillRect(58,156,884,345);g.setClip(old);text(g,"0"+(part+1),94,188,92,bold,Color.WHITE);leading(g,part==0?"KGU\nCAMPUS GUIDE":PARTS[part],94,298,50,54,bold,Color.WHITE);
-        text(g,TAGLINES[part],58,528,43,black,INK);text(g,part==0?"처음 만나는 캠퍼스를 조금 더 가깝게.\n학교 소개와 캠퍼스 안내를 퀴즈로 살펴보세요.":part==1?"알아두면 든든한 학사·학습생활.\n학교생활에 필요한 정보를 퀴즈로 살펴보세요.":"건물 사진을 보고 이름을 골라 보세요.\n경기대학교 캠퍼스 건물을 알아봅니다.",58,600,24,regular,MUTED);
-        int count=questionCount();text(g,"총 "+count+"문항",58,728,25,bold,INK);text(g,"정답당 10점",369,728,25,bold,INK);text(g,"최대 "+(count*10)+"점",679,728,25,bold,INK);line(g,58,816,884,LINE);text(g,"하나의 답변을 고른 뒤 ‘다음 문제’를 눌러 주세요.\n정답과 해설을 확인하며 차근차근 진행할 수 있어요.",58,850,21,regular,MUTED);pill(g,b,"Part 0"+(part+1)+" 시작하기",58,940,884,true,true,false,()->{selected=-1;questionIndex=0;partScore=0;show(Screen.QUESTION);});
+        text(g,TAGLINES[part],58,528,43,black,INK);text(g,part==0?"처음 만나는 캠퍼스를 조금 더 가깝게.\n학교 소개와 캠퍼스 안내를 퀴즈로 살펴보세요.":part==1?"알아두면 든든한 학사·학습생활.\n날아오는 접시를 쏘며 핵심 정보를 모아 보세요.":"건물 사진을 보고 이름을 골라 보세요.\n경기대학교 캠퍼스 건물을 알아봅니다.",58,600,24,regular,MUTED);
+        int count=questionCount();String unit=part==1?"접시":"문항";text(g,"총 "+count+unit,58,728,25,bold,INK);text(g,part==1?"성공당 10점":"정답당 10점",369,728,25,bold,INK);text(g,"최대 "+(count*10)+"점",679,728,25,bold,INK);line(g,58,816,884,LINE);text(g,part==1?"날아오는 접시를 클릭해 명중시키세요.\n다섯 번 성공하면 파트가 완료됩니다.":"하나의 답변을 고른 뒤 ‘다음 문제’를 눌러 주세요.\n정답과 해설을 확인하며 차근차근 진행할 수 있어요.",58,850,21,regular,MUTED);pill(g,b,"Part 0"+(part+1)+" 시작하기",58,940,884,true,true,false,()->{selected=-1;questionIndex=0;partScore=0;if(part==1)startPlateGame();else show(Screen.QUESTION);});
     }
     String questionText(){return currentQuestion().prompt();}
     String[] options(){return currentQuestion().options();}
@@ -159,17 +223,44 @@ public class CampusQuiz {
         for(int i=0;i<4;i++){int y=476+i*100;boolean active=selected==i;round(g,58,y,884,84,4,active?INK:Color.WHITE,active?null:LINE);Color fg=active?Color.WHITE:INK;text(g,""+(char)('A'+i),86,y+22,28,bold,fg);text(g,options()[i],138,y+22,27,bold,fg);g.setColor(active?Color.WHITE:MUTED);g.setStroke(new BasicStroke(2));g.drawOval(892,y+32,20,20);if(active)g.fillOval(900,y+40,4,4);final int n=i;if(b)hit("답변 "+(char)('A'+i)+": "+options()[i],58,y,884,84,true,()->choose(n));}
         pill(g,b,"이전 문제",58,899,310,false,true,false,()->show(Screen.INTRO));arrow(g,260,932,false,INK);pill(g,b,"다음 문제",592,899,350,true,selected>=0,true,()->show(selected==answerIndex()?Screen.CORRECT:Screen.INCORRECT));text(g,selected<0?"답변을 선택하면 다음 문제로 이동할 수 있어요.":"답변을 선택했어요. 다음 문제로 진행해 주세요.",58,989,18,regular,MUTED);link(g,b,"퀴즈 종료",878,989,70,this::exitQuiz);
     }
+    void plateGame(Graphics2D g,boolean b){
+        Object oldAA=g.getRenderingHint(RenderingHints.KEY_ANTIALIASING),oldTextAA=g.getRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING);g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_OFF);g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        Color arcadeBg=new Color(8,12,28),arcadePanel=new Color(12,19,43),arcadeCyan=new Color(61,240,255),arcadePink=new Color(255,68,190),arcadeYellow=new Color(255,224,91);g.setColor(arcadeBg);g.fillRect(0,40,1000,1040);
+        text(g,"ACADEMIC LIFE // PLATE SHOOT",58,76,21,bold,arcadeCyan);text(g,"STAGE 02",58,111,16,bold,arcadePink);text(g,"SCORE "+String.format("%03d",partScore),730,111,18,bold,arcadeYellow);arcadeProgress(g,58,135,884,plateRound/(double)questionCount(),arcadeCyan);
+        g.setColor(arcadePanel);g.fillRect(58,175,884,665);g.setColor(new Color(26,56,91));g.setStroke(new BasicStroke(2));g.drawRect(58,175,884,665);g.setColor(new Color(61,240,255,35));for(int x=78;x<942;x+=32)g.drawLine(x,175,x,840);for(int y=191;y<840;y+=32)g.drawLine(58,y,942,y);g.setColor(new Color(255,255,255,18));for(int y=180;y<840;y+=8)g.drawLine(58,y,942,y);
+        text(g,"QUESTION "+(questionIndex+1)+" / "+questionCount(),86,211,18,bold,arcadePink);text(g,"정답 접시를 쏴라",752,211,18,bold,arcadeYellow);String[] options=currentQuestion().options();g.setColor(new Color(7,12,28,235));g.fillRect(74,242,852,188);g.setColor(new Color(61,240,255,110));g.drawRect(74,242,852,188);text(g,"정답에 맞는 접시를 쏴서 학사 지식을 모아 보세요",86,270,29,black,Color.WHITE);paragraph(g,currentQuestion().prompt(),86,312,790,23,bold,Color.WHITE);
+        Shape playClip=g.getClip();g.clipRect(58,175,884,665);for(FlyingPlate p:flyingPlates)drawFlyingPlate(g,p,options[p.factIndex],arcadeCyan,arcadeYellow);g.setClip(playClip);
+        if(flyingPlates.isEmpty()){text(g,"WAITING FOR TARGETS...",350,515,22,bold,arcadeYellow);text(g,"양쪽에서 보기 접시가 날아옵니다",330,550,18,regular,new Color(175,205,220));}
+        drawShotEffects(g);drawAimAndBlaster(g,arcadeCyan,arcadeYellow);drawPlateOutcome(g,b,arcadeCyan,arcadePink);text(g,"DONE "+plateRound+" / "+questionCount(),86,878,18,bold,arcadeCyan);text(g,"CLICK TO FIRE",730,878,18,bold,arcadeYellow);arcadeButton(g,b,"게임 종료",790,965,152,42,false,()->exitQuiz());
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,oldAA);g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING,oldTextAA);
+    }
+    void arcadeProgress(Graphics2D g,int x,int y,int w,double fraction,Color accent){g.setColor(new Color(31,42,70));g.fillRect(x,y,w,10);g.setColor(accent);g.fillRect(x,y,(int)Math.round(w*Math.max(0,Math.min(1,fraction))),10);g.setColor(Color.WHITE);g.drawRect(x,y,w,10);}
+    void arcadeButton(Graphics2D g,boolean building,String label,int x,int y,int w,int h,boolean primary,Runnable action){Color fill=primary?new Color(30,190,210):new Color(18,28,56),edge=primary?new Color(255,224,91):new Color(61,240,255);g.setColor(fill);g.fillRect(x,y,w,h);g.setColor(edge);g.setStroke(new BasicStroke(2));g.drawRect(x,y,w,h);g.setColor(new Color(255,255,255,120));g.drawLine(x+5,y+5,x+w-6,y+5);g.setFont(bold.deriveFont(17f));center(g,label,x,y+11,w,17,bold,primary?Color.BLACK:Color.WHITE);if(building)hit(label,x,y,w,h,true,action);}
+    void drawFlyingPlate(Graphics2D g,FlyingPlate p,String fact,Color edge,Color highlight){
+        if(p.x<140||p.x>860)return;AffineTransform transform=g.getTransform();double tilt=plateVerticalScale(p);g.translate(p.x,p.y);g.scale(1,tilt);g.setColor(new Color(0,0,0,150));g.fillRect(-78,-16,156,40);g.setColor(new Color(226,238,245));g.fillRect(-80,-24,160,44);g.setColor(new Color(150,190,208));g.fillRect(-64,-35,128,11);g.setColor(edge);g.drawRect(-80,-24,160,44);g.setColor(highlight);g.fillRect(-48,-16,96,5);plateLabel(g,fact);g.setTransform(transform);
+    }
+    void plateLabel(Graphics2D g,String value){Font font=displayFont(value,bold,21);g.setFont(font);double natural=g.getFontMetrics().stringWidth(value);int size=(int)Math.max(12,Math.min(21,21*136/Math.max(136,natural)));center(g,value,-80,-10,160,size,bold,INK);}
+    void drawShotEffects(Graphics2D g){
+        double now=System.currentTimeMillis();for(ShotEffect shot:shotEffects){float alpha=(float)Math.max(0,Math.min(1,(shot.expires-now)/150.0));Color beam=shot.hit?(shot.correct?new Color(255,244,180,Math.round(alpha*220)):new Color(255,82,124,Math.round(alpha*220))):new Color(255,244,180,Math.round(alpha*210));g.setColor(beam);g.setStroke(new BasicStroke(4));g.drawLine(500,792,(int)Math.round(shot.x),(int)Math.round(shot.y));g.setColor(beam);g.fillRect((int)Math.round(shot.x-6),(int)Math.round(shot.y-6),12,12);g.fillRect((int)Math.round(shot.x-16),(int)Math.round(shot.y-2),32,4);g.fillRect((int)Math.round(shot.x-2),(int)Math.round(shot.y-16),4,32);}
+    }
+    void drawPlateOutcome(Graphics2D g,boolean b,Color cyan,Color pink){
+        if(!pendingPlateOutcome)return;g.setColor(new Color(2,5,15,185));g.fillRect(58,175,884,665);Color accent=outcomeCorrect?cyan:pink;g.setColor(accent);g.fillRect(250,405,500,238);g.setColor(new Color(7,12,28));g.fillRect(258,413,484,222);g.setColor(accent);g.fillRect(282,448,54,54);g.setColor(Color.BLACK);g.fillRect(294,460,30,30);g.setColor(Color.WHITE);g.setStroke(new BasicStroke(4));if(outcomeCorrect){g.drawLine(291,475,301,485);g.drawLine(301,485,322,462);}else{g.drawLine(292,458,326,492);g.drawLine(326,458,292,492);}text(g,outcomeCorrect?"CORRECT!":"WRONG!",366,454,35,bold,accent);text(g,outcomeCorrect?"정답 접시 명중":"오답으로 기록됨",366,500,20,regular,Color.WHITE);if(!outcomeCorrect)text(g,"정답: "+currentQuestion().options()[currentQuestion().answer()],366,538,18,bold,Color.WHITE);String next=plateRound>=questionCount()?"결과 보기":"다음 문제";arcadeButton(g,b,next,366,575,300,42,true,this::resolvePlateOutcome);
+    }
+    void drawAimAndBlaster(Graphics2D g,Color cyan,Color yellow){
+        double gunX=500,gunY=792,angle=Math.atan2(aimY-gunY,aimX-gunX);AffineTransform transform=g.getTransform();g.translate(gunX,gunY);g.rotate(angle);g.setColor(new Color(4,8,18));g.fillRect(-18,-12,70,24);g.setColor(cyan);g.fillRect(18,-7,36,14);g.setColor(yellow);g.fillRect(8,-4,10,8);g.setTransform(transform);
+        int x=(int)Math.round(aimX),y=(int)Math.round(aimY);g.setColor(yellow);g.setStroke(new BasicStroke(3));g.drawRect(x-22,y-22,44,44);g.drawLine(x-38,y,x-10,y);g.drawLine(x+10,y,x+38,y);g.drawLine(x,y-38,x,y-10);g.drawLine(x,y+10,x,y+38);g.setColor(cyan);g.fillRect(x-4,y-4,8,8);
+    }
     void feedback(Graphics2D g,boolean b){
         boolean correct=screen==Screen.CORRECT;int answer=answerIndex();photo(g,"feedback-campus",0,40,510,1040,false);fade(g,0,40,510,1040,true);text(g,(questionIndex+1)+" / "+questionCount(),44,67,25,bold,Color.BLACK);text(g,partLabel(),673,69,20,bold,Color.BLACK);checkIcon(g,396,207,64,correct);text(g,correct?"정답입니다!":"아쉬워요!",480,204,48,black,Color.BLACK);
         int answerY=correct?300:482;if(!correct){text(g,"내가 선택한 답변",396,299,18,regular,RED);round(g,396,335,548,83,5,new Color(253,241,240),RED);text(g,""+(char)('A'+selected)+"   "+options()[selected],424,357,27,bold,INK);text(g,"정답",396,447,18,bold,INK);}
         round(g,396,answerY,548,90,5,BLUE,null);text(g,""+(char)('A'+answer)+"   "+options()[answer],420,answerY+27,27,bold,Color.BLACK);line(g,396,answerY+118,548,LINE);text(g,"⊙ 해설",396,answerY+146,23,regular,Color.BLACK);paragraph(g,explanation(),396,answerY+188,548,24,regular,INK);pill(g,b,"다음 문제",396,954,548,true,true,true,this::nextAfterFeedback);
     }
     void exitModal(Graphics2D g,boolean b){
-        g.setColor(new Color(0,0,0,102));g.fillRect(0,40,1000,1040);round(g,170,308,660,478,10,Color.WHITE,null);arrow(g,235,371,true,INK);text(g,"×",762,343,29,regular,INK);if(b)hit("종료 확인 닫기",748,340,50,50,true,()->show(beforeExit));text(g,"퀴즈를 그만 풀까요?",216,413,37,black,INK);text(g,"지금 종료하면 진행 중인 Part 0"+(part+1)+"의 답변은 저장되지 않아요.\n파트 선택 화면으로 돌아갑니다.",216,490,23,regular,MUTED);round(g,216,585,568,62,6,PALE,null);text(g,"PART 0"+(part+1),236,603,19,bold,INK);text(g,(questionIndex+1)+" / "+questionCount()+" 문항 진행 중",628,603,18,regular,INK);pill(g,b,"종료하기",216,675,276,false,true,false,()->{selected=-1;show(Screen.PARTS);});pill(g,b,"계속 풀기",508,675,276,true,true,false,()->show(beforeExit));
+        g.setColor(new Color(0,0,0,102));g.fillRect(0,40,1000,1040);round(g,170,308,660,478,10,Color.WHITE,null);arrow(g,235,371,true,INK);text(g,"×",762,343,29,regular,INK);if(b)hit("종료 확인 닫기",748,340,50,50,true,()->show(beforeExit));text(g,part==1?"게임을 그만둘까요?":"퀴즈를 그만 풀까요?",216,413,37,black,INK);text(g,(part==1?"지금 종료하면 진행 중인 접시 기록은 저장되지 않아요.":"지금 종료하면 진행 중인 Part 0"+(part+1)+"의 답변은 저장되지 않아요.")+"\n파트 선택 화면으로 돌아갑니다.",216,490,23,regular,MUTED);round(g,216,585,568,62,6,PALE,null);text(g,"PART 0"+(part+1),236,603,19,bold,INK);text(g,part==1?plateRound+" / "+questionCount()+" 접시 진행 중":(questionIndex+1)+" / "+questionCount()+" 문항 진행 중",628,603,18,regular,INK);pill(g,b,"종료하기",216,675,276,false,true,false,()->{selected=-1;show(Screen.PARTS);});pill(g,b,"계속 풀기",508,675,276,true,true,false,()->show(beforeExit));
     }
     void partDone(Graphics2D g,boolean b){
-        checkIcon(g,464,90,72,true);center(g,"PART 0"+(part+1)+" · "+PARTS[part],0,191,1000,21,bold,INK);center(g,new String[]{"첫 번째 파트 완료!","두 번째 파트 완료!","세 번째 파트 완료!"}[part],0,230,1000,49,black,Color.BLACK);center(g,part==2?"사진 속 건물을 잘 맞혀 보셨나요?":"캠퍼스를 알아가는 첫걸음, 잘 마쳤어요.",0,305,1000,23,regular,MUTED);
-        int count=questionCount();round(g,100,367,800,298,10,Color.WHITE,LINE);text(g,"파트 점수",132,394,23,regular,Color.BLACK);text(g,""+partScore,132,421,78,black,Color.BLACK);text(g,"/ "+(count*10),250,472,30,regular,Color.BLACK);text(g,"정답",508,444,22,regular,Color.BLACK);text(g,(partScore/10)+" / "+count,508,482,36,regular,Color.BLACK);text(g,"풀이 완료",790,444,22,regular,Color.BLACK);text(g,count+" / "+count,790,482,36,regular,Color.BLACK);line(g,132,547,736,LINE);text(g,"전체 진행 상황",132,575,21,regular,INK);text(g,(part+1)+" / 3 파트 완료",750,575,20,bold,INK);for(int i=0;i<3;i++)round(g,132+i*248,625,239,8,4,i<=part?INK:LINE,null);
+        checkIcon(g,464,90,72,true);center(g,"PART 0"+(part+1)+" · "+PARTS[part],0,191,1000,21,bold,INK);center(g,new String[]{"첫 번째 파트 완료!","두 번째 파트 완료!","세 번째 파트 완료!"}[part],0,230,1000,49,black,Color.BLACK);center(g,part==2?"사진 속 건물을 잘 맞혀 보셨나요?":part==1?"날아오는 접시를 모두 명중했어요.":"캠퍼스를 알아가는 첫걸음, 잘 마쳤어요.",0,305,1000,23,regular,MUTED);
+        int count=questionCount();round(g,100,367,800,298,10,Color.WHITE,LINE);text(g,"파트 점수",132,394,23,regular,Color.BLACK);text(g,""+partScore,132,421,78,black,Color.BLACK);text(g,"/ "+(count*10),250,472,30,regular,Color.BLACK);text(g,part==1?"명중":"정답",508,444,22,regular,Color.BLACK);text(g,(partScore/10)+" / "+count,508,482,36,regular,Color.BLACK);text(g,part==1?"플레이 완료":"풀이 완료",790,444,22,regular,Color.BLACK);text(g,count+" / "+count,790,482,36,regular,Color.BLACK);line(g,132,547,736,LINE);text(g,"전체 진행 상황",132,575,21,regular,INK);text(g,(part+1)+" / 3 파트 완료",750,575,20,bold,INK);for(int i=0;i<3;i++)round(g,132+i*248,625,239,8,4,i<=part?INK:LINE,null);
         round(g,100,693,800,116,6,PALE,null);text(g,part<2?"0"+(part+2):"03",124,713,52,bold,Color.BLACK);text(g,part<2?PARTS[part+1]:"모든 파트를 마쳤어요!",220,717,24,bold,INK);text(g,part<2?"다음은 "+TAGLINES[part+1]:"최종 결과를 확인해 보세요.",220,754,21,regular,MUTED);arrow(g,864,751,true,INK);pill(g,b,part<2?"다음 파트 시작하기":"최종 결과 확인하기",100,837,800,true,true,true,this::nextPart);pill(g,b,"파트 선택으로",100,917,800,false,true,false,()->show(Screen.PARTS));brand(g,1010);
     }
     void finalResult(Graphics2D g,boolean b){
@@ -201,6 +292,6 @@ public class CampusQuiz {
         backbar(g,b,"오답 복습 목록","REVIEW "+(reviewIndex+1)+" / 3",()->show(Screen.REVIEW));text(g,"PART 0"+(reviewIndex+1)+" · "+PARTS[reviewIndex],58,132,21,bold,INK);text(g,"Q. "+new String[]{"03","08","13"}[reviewIndex],870,132,21,bold,INK);leading(g,reviewIndex==0?"경기대학교 입학처 홈페이지의\nKGU소개에서 확인할 수 있는 내용으로\n알맞은 것은?":reviewIndex==1?"학사·학습생활을 알아보는\n퀴즈 파트는?":"비교과 프로그램을 알아보는\n퀴즈 파트는?",58,176,40,48,black,Color.BLACK);text(g,"내가 선택했던 답과 정답을 비교해 보세요.",58,341,20,regular,MUTED);
         round(g,58,396,884,112,5,Color.WHITE,LINE);text(g,"⊗ 내가 선택한 답변",82,416,20,regular,RED);text(g,"B   "+new String[]{OPTIONS[1],PARTS[0],PARTS[1]}[reviewIndex],82,453,27,bold,Color.BLACK);round(g,58,524,884,112,5,BLUE,null);text(g,"⊙ 정답",82,544,20,bold,INK);text(g,"A   "+new String[]{OPTIONS[0],PARTS[1],PARTS[2]}[reviewIndex],82,581,27,regular,Color.BLACK);line(g,58,664,884,LINE);text(g,"해설",58,696,25,bold,INK);text(g,reviewIndex==0?"경기대학교 입학처의 KGU소개 메뉴에서는 캠퍼스 안내(VR 캠퍼스)를 통해 온라인으로 학교\n캠퍼스를 둘러볼 수 있습니다.":"이 파트는 "+TAGLINES[reviewIndex]+"\n학교 안내에서 관련 정보를 확인해 보세요.",58,748,24,regular,INK);text(g,"기억해 두세요 · KGU소개는 학교와 캠퍼스를 알아보는 메뉴예요.\n개인별 출석 점수를 확인하는 메뉴와는 구분해 주세요.",58,832,21,regular,MUTED);pill(g,b,"복습 목록으로",58,936,430,false,true,false,()->show(Screen.REVIEW));pill(g,b,"다음 오답 보기",510,936,432,true,true,true,()->{reviewIndex=(reviewIndex+1)%3;show(Screen.REVIEW_DETAIL);});
     }
-    void exportPreviews()throws IOException{File dir=new File("previews/pdf-design");dir.mkdirs();int i=0;for(Screen s:Screen.values()){part=0;reviewIndex=0;selected=s==Screen.QUESTION?-1:s==Screen.INCORRECT?1:0;screen=s;rebuild();root.setSize(WIDTH,HEIGHT);root.doLayout();BufferedImage out=new BufferedImage(WIDTH,HEIGHT,BufferedImage.TYPE_INT_RGB);Graphics2D g=out.createGraphics();root.printAll(g);g.dispose();ImageIO.write(out,"png",new File(dir,String.format("%02d-%s.png",++i,s.name().toLowerCase())));}System.out.println("Rendered 13 PDF-reference screens to previews/pdf-design/");}
+    void exportPreviews()throws IOException{File dir=new File("previews/pdf-design");dir.mkdirs();for(Screen s:Screen.values()){part=s==Screen.PLATE_GAME?1:0;plateRound=s==Screen.PLATE_GAME?2:0;partScore=s==Screen.PLATE_GAME?plateRound*10:0;reviewIndex=0;selected=s==Screen.QUESTION?-1:s==Screen.INCORRECT?1:0;flyingPlates.clear();if(s==Screen.PLATE_GAME)spawnPreviewPlates();screen=s;rebuild();root.setSize(WIDTH,HEIGHT);root.doLayout();BufferedImage out=new BufferedImage(WIDTH,HEIGHT,BufferedImage.TYPE_INT_RGB);Graphics2D g=out.createGraphics();root.printAll(g);g.dispose();String file=switch(s){case WELCOME->"01-welcome";case GUIDE->"02-guide";case PARTS->"03-parts";case INTRO->"04-intro";case QUESTION->"05-question";case SELECTED->"06-selected";case PLATE_GAME->"plate-game";case CORRECT->"07-correct";case INCORRECT->"08-incorrect";case EXIT->"09-exit";case PART_DONE->"10-part_done";case FINAL->"11-final";case REVIEW->"12-review";case REVIEW_DETAIL->"13-review_detail";};ImageIO.write(out,"png",new File(dir,file+".png"));}System.out.println("Rendered "+Screen.values().length+" Swing screens to previews/pdf-design/");}
     public static void main(String[] args)throws Exception{boolean preview=Arrays.asList(args).contains("--preview");if(preview)System.setProperty("java.awt.headless","true");loadFonts();SwingUtilities.invokeAndWait(()->{CampusQuiz app=new CampusQuiz();if(preview){try{app.exportPreviews();}catch(IOException e){throw new RuntimeException(e);}return;}app.frame=new JFrame("KGU QUIZ · UI Demo");app.frame.setUndecorated(true);app.frame.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);app.frame.setContentPane(app.root);app.frame.pack();app.frame.setMinimumSize(new Dimension(600,648));app.frame.setLocationRelativeTo(null);app.frame.setVisible(true);});}
 }
